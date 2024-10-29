@@ -18,6 +18,8 @@ module Database.RocksDB.Internal
     , withOptionsCF
     , withReadOpts
     , withWriteOpts
+    , createReadOpts
+    , setOptions
 
     -- * Utilities
     , freeCString
@@ -37,6 +39,7 @@ import           UnliftIO.Foreign
 
 data DB = DB { rocksDB        :: !RocksDB
              , columnFamilies :: ![ColumnFamily]
+             , opts           :: !Options
              , readOpts       :: !ReadOpts
              , writeOpts      :: !WriteOpts
              }
@@ -59,24 +62,8 @@ instance Default Config where
                  }
 
 withOptions :: MonadUnliftIO m => Config -> (Options -> m a) -> m a
-withOptions Config {..} f = with_opts $ \opts -> do
-    liftIO $ do
-        when bloomFilter $ do
-            fp <- c_rocksdb_filterpolicy_create_bloom_full 10
-            bo <- c_rocksdb_block_based_options_create
-            c_rocksdb_block_based_options_set_filter_policy bo fp
-            c_rocksdb_options_set_block_based_table_factory opts bo
-        forM_ prefixLength $ \l -> do
-            t <- c_rocksdb_slicetransform_create_fixed_prefix (intToCSize l)
-            c_rocksdb_options_set_prefix_extractor opts t
-        forM_ maxFiles $
-            c_rocksdb_options_set_max_open_files opts . intToCInt
-        c_rocksdb_options_set_create_if_missing
-            opts (boolToCBool createIfMissing)
-        c_rocksdb_options_set_error_if_exists
-            opts (boolToCBool errorIfExists)
-        c_rocksdb_options_set_paranoid_checks
-            opts (boolToCBool paranoidChecks)
+withOptions cfg f = with_opts $ \opts -> do
+    liftIO $ setOptions cfg opts
     f opts
   where
     with_opts =
@@ -84,6 +71,24 @@ withOptions Config {..} f = with_opts $ \opts -> do
         (liftIO c_rocksdb_options_create)
         (liftIO . c_rocksdb_options_destroy)
 
+setOptions :: Config -> Options -> IO ()
+setOptions Config {..} opts = do
+    when bloomFilter $ do
+        fp <- c_rocksdb_filterpolicy_create_bloom_full 10
+        bo <- c_rocksdb_block_based_options_create
+        c_rocksdb_block_based_options_set_filter_policy bo fp
+        c_rocksdb_options_set_block_based_table_factory opts bo
+    forM_ prefixLength $ \l -> do
+        t <- c_rocksdb_slicetransform_create_fixed_prefix (intToCSize l)
+        c_rocksdb_options_set_prefix_extractor opts t
+    forM_ maxFiles $
+        c_rocksdb_options_set_max_open_files opts . intToCInt
+    c_rocksdb_options_set_create_if_missing
+        opts (boolToCBool createIfMissing)
+    c_rocksdb_options_set_error_if_exists
+        opts (boolToCBool errorIfExists)
+    c_rocksdb_options_set_paranoid_checks
+        opts (boolToCBool paranoidChecks)
 
 withOptionsCF :: MonadUnliftIO m => [Config] -> ([Options] -> m a) -> m a
 withOptionsCF cfgs f =
@@ -95,13 +100,15 @@ withOptionsCF cfgs f =
 withReadOpts :: MonadUnliftIO m => Maybe Snapshot -> (ReadOpts -> m a) -> m a
 withReadOpts maybe_snap_ptr =
     bracket
-    create_read_opts
+    (liftIO $ createReadOpts maybe_snap_ptr)
     (liftIO . c_rocksdb_readoptions_destroy)
   where
-    create_read_opts = liftIO $ do
-        read_opts_ptr <- c_rocksdb_readoptions_create
-        forM_ maybe_snap_ptr $ c_rocksdb_readoptions_set_snapshot read_opts_ptr
-        return read_opts_ptr
+
+createReadOpts :: Maybe Snapshot -> IO ReadOpts
+createReadOpts maybe_snap_ptr = do
+    read_opts_ptr <- c_rocksdb_readoptions_create
+    forM_ maybe_snap_ptr $ c_rocksdb_readoptions_set_snapshot read_opts_ptr
+    return read_opts_ptr
 
 withWriteOpts :: MonadUnliftIO m => (WriteOpts -> m a) -> m a
 withWriteOpts =

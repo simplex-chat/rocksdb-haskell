@@ -25,6 +25,8 @@ module Database.RocksDB.Base
     -- * Basic Database Manipulations
     , withDB
     , withDBCF
+    , open
+    , close
     , put
     , putCF
     , delete
@@ -75,14 +77,16 @@ data BatchOp = Put !ByteString !ByteString
 -- The returned handle will be automatically released with 'close'
 -- when the function exits.
 withDB :: MonadUnliftIO m => FilePath -> Config -> (DB -> m a) -> m a
-withDB path config f =
-    withOptions config $ \opts_ptr ->
-    withReadOpts Nothing $ \read_opts ->
-    withWriteOpts $ \write_opts ->
-    bracket (create_db opts_ptr read_opts write_opts) destroy_db f
+withDB path config = bracket (open path config) close
+
+open :: MonadIO m => FilePath -> Config -> m DB
+open path config = liftIO $ do
+    opts_ptr <- c_rocksdb_options_create
+    setOptions config opts_ptr
+    read_opts <- createReadOpts Nothing
+    write_opts <- c_rocksdb_writeoptions_create
+    create_db opts_ptr read_opts write_opts
   where
-    destroy_db db = liftIO $
-        c_rocksdb_close $ rocksDB db
     create_db opts_ptr read_opts write_opts = do
         when (createIfMissing config) $
             createDirectoryIfMissing True path
@@ -91,9 +95,17 @@ withDB path config f =
                 c_rocksdb_open opts_ptr path_ptr
             return DB { rocksDB = db_ptr
                       , columnFamilies = []
+                      , opts = opts_ptr
                       , readOpts = read_opts
                       , writeOpts = write_opts
                       }
+
+close :: MonadIO m => DB -> m ()
+close db = liftIO $ do
+    c_rocksdb_writeoptions_destroy $ writeOpts db
+    c_rocksdb_readoptions_destroy $ readOpts db
+    c_rocksdb_options_destroy $ opts db
+    c_rocksdb_close $ rocksDB db
 
 withDBCF :: MonadUnliftIO m
          => FilePath
@@ -131,6 +143,7 @@ withDBCF path config cf_cfgs f =
                 db_ptr o n
             return DB { rocksDB = db_ptr
                       , columnFamilies = cfs
+                      , opts = opts_ptr
                       , readOpts = read_opts
                       , writeOpts = write_opts
                       }
@@ -164,6 +177,7 @@ withDBCF path config cf_cfgs f =
                     cfs <- peekArray (length cf_cfgs + 1) cf_ptrs_array
                     return DB { rocksDB = db_ptr
                               , columnFamilies = tail cfs
+                              , opts = opts_ptr
                               , readOpts = read_opts
                               , writeOpts = write_opts
                               }
